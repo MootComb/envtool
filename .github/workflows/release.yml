@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TOOL_NAME: envtool
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read_version.outputs.version }}
+      tag: ${{ steps.read_version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Read VERSION
+        id: read_version
+        run: |
+          if [ ! -f VERSION ]; then
+            echo "VERSION file not found" >&2
+            exit 1
+          fi
+          VERSION="$(grep -v '^[[:space:]]*$' VERSION | head -n1 | tr -d '[:space:]')"
+          if [ -z "$VERSION" ]; then
+            echo "VERSION file is empty" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cross: aarch64-linux-gnu-
+            abi: aarch64
+            apt: gcc-aarch64-linux-gnu
+          - cross: arm-linux-gnueabihf-
+            abi: armv7l
+            apt: gcc-arm-linux-gnueabihf
+          - cross: ""
+            abi: x86_64
+            apt: gcc
+          - cross: i686-linux-gnu-
+            abi: i686
+            apt: gcc-multilib
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Build
+        run: |
+          set -e
+          make clean
+          make CROSS=${{ matrix.cross }}
+
+      - name: Verify
+        run: |
+          set -e
+          file fw_setenv
+          test -x fw_setenv
+          test -e fw_printenv
+          test -e envtool
+
+      - name: Package
+        run: |
+          set -e
+          VERSION="${{ needs.prepare.outputs.version }}"
+          ABI="${{ matrix.abi }}"
+          NAME="${TOOL_NAME}-${ABI}-${VERSION}"
+
+          mkdir -p "dist/$NAME" dist/bin
+
+          # archive keeps the symlinks: one binary + two links
+          cp -a fw_setenv "dist/$NAME/fw_setenv"
+          ln -s fw_setenv "dist/$NAME/fw_printenv"
+          ln -s fw_setenv "dist/$NAME/envtool"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+
+          # standalone copies for per-file download
+          for n in fw_setenv fw_printenv envtool; do
+            cp -a fw_setenv "dist/bin/${n}-${ABI}-${VERSION}"
+            chmod +x "dist/bin/${n}-${ABI}-${VERSION}"
+          done
+
+          ls -lR dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TOOL_NAME }}-${{ matrix.abi }}-${{ needs.prepare.outputs.version }}
+          path: |
+            dist/*.tar.gz
+            dist/bin/*
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lR artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ env.TOOL_NAME }} ${{ needs.prepare.outputs.version }}
+          body: |
+            Release ${{ needs.prepare.outputs.version }} of ${{ env.TOOL_NAME }}.
+
+            Standalone fw_printenv / fw_setenv replacement for U-Boot
+            environment on raw MTD and plain env devices.
+
+            ## Assets
+
+            - `envtool-<abi>-<version>.tar.gz` — archive containing
+              `fw_setenv` (binary) plus `fw_printenv` and `envtool`
+              symlinks; extract with `tar xzf` to preserve them
+            - `<utility>-<abi>-<version>` — standalone binary copy of
+              `fw_setenv` (can be invoked directly under any name)
+
+            Supported ABIs: `aarch64`, `armv7l`, `x86_64`, `i686`.
+
+            ## Changes
+            - Initial release
+          files: |
+            artifacts/*.tar.gz
+            artifacts/fw_setenv-*
+            artifacts/fw_printenv-*
+            artifacts/envtool-*
+          fail_on_unmatched_files: true
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
