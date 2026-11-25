@@ -57,7 +57,7 @@ jobs:
             apt: gcc
           - cross: i686-linux-gnu-
             abi: i686
-            apt: gcc-multilib
+            apt: gcc-i686-linux-gnu
     steps:
       - uses: actions/checkout@v4
         with:
