@@ -151,9 +151,9 @@ jobs:
             - Initial release
           files: |
             artifacts/*.tar.gz
-            artifacts/fw_setenv-*
-            artifacts/fw_printenv-*
-            artifacts/envtool-*
+            artifacts/bin/fw_setenv-*
+            artifacts/bin/fw_printenv-*
+            artifacts/bin/envtool-*
           fail_on_unmatched_files: true
           overwrite_files: true
         env:
