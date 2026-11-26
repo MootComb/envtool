@@ -40,7 +40,7 @@ static size_t env_payload_size(const struct backend *b)
     return s > sizeof(uint32_t) ? s - sizeof(uint32_t) : 0;
 }
 
-// Read CRC header, then payload; verify CRC and warn on mismatch
+// Read CRC header, then full payload; verify CRC over full payload
 static int env_read(struct backend *b, unsigned char *dst, size_t len)
 {
     size_t total = (size_t)b->cfg->raw_size;
@@ -81,6 +81,7 @@ static int env_read(struct backend *b, unsigned char *dst, size_t len)
         return -1;
     }
 
+    // CRC over full payload, matching U-Boot behaviour
     uint32_t stored = get_u32le(hdr);
     uint32_t calc   = crc32(0, dst, len);
     if (stored != calc) {
@@ -90,7 +91,7 @@ static int env_read(struct backend *b, unsigned char *dst, size_t len)
     return 0;
 }
 
-// Write payload preceded by freshly computed CRC header
+// Write full payload padded with raw_fill; CRC computed over full payload
 static int env_write(struct backend *b, const unsigned char *src, size_t len)
 {
     size_t total = (size_t)b->cfg->raw_size;
@@ -111,7 +112,8 @@ static int env_write(struct backend *b, const unsigned char *src, size_t len)
     memset(buf, b->cfg->raw_fill, total);
     memcpy(buf + sizeof(uint32_t), src, len);
 
-    uint32_t crc = crc32(0, src, len);
+    // CRC over full payload (including zero-filled tail), as U-Boot does
+    uint32_t crc = crc32(0, buf + sizeof(uint32_t), payload);
     put_u32le(buf, crc);
 
     int fd = open(b->cfg->dev[0].devname, O_WRONLY);
