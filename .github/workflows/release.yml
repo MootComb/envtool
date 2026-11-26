@@ -89,7 +89,7 @@ jobs:
           ABI="${{ matrix.abi }}"
           NAME="${TOOL_NAME}-${ABI}-${VERSION}"
 
-          mkdir -p "dist/$NAME" dist/bin
+          mkdir -p "dist/$NAME"
 
           # archive keeps the symlinks: one binary + two links
           cp -a fw_setenv "dist/$NAME/fw_setenv"
@@ -97,21 +97,13 @@ jobs:
           ln -s fw_setenv "dist/$NAME/envtool"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 
-          # standalone copies for per-file download
-          for n in fw_setenv fw_printenv envtool; do
-            cp -a fw_setenv "dist/bin/${n}-${ABI}-${VERSION}"
-            chmod +x "dist/bin/${n}-${ABI}-${VERSION}"
-          done
-
           ls -lR dist
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TOOL_NAME }}-${{ matrix.abi }}-${{ needs.prepare.outputs.version }}
-          path: |
-            dist/*.tar.gz
-            dist/bin/*
+          path: dist/*.tar.gz
 
   release:
     needs: [prepare, build]
@@ -142,8 +134,6 @@ jobs:
             - `envtool-<abi>-<version>.tar.gz` — archive containing
               `fw_setenv` (binary) plus `fw_printenv` and `envtool`
               symlinks; extract with `tar xzf` to preserve them
-            - `<utility>-<abi>-<version>` — standalone binary copy of
-              `fw_setenv` (can be invoked directly under any name)
 
             Supported ABIs: `aarch64`, `armv7l`, `x86_64`, `i686`.
 
@@ -151,9 +141,6 @@ jobs:
             - Initial release
           files: |
             artifacts/*.tar.gz
-            artifacts/bin/fw_setenv-*
-            artifacts/bin/fw_printenv-*
-            artifacts/bin/envtool-*
           fail_on_unmatched_files: true
           overwrite_files: true
         env:
