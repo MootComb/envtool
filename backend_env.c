@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "backend.h"
+#include "crc32.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +8,21 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+// Little endian 32-bit helpers
+static uint32_t get_u32le(const unsigned char *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void put_u32le(unsigned char *p, uint32_t v)
+{
+    p[0] = (unsigned char)(v & 0xff);
+    p[1] = (unsigned char)((v >> 8) & 0xff);
+    p[2] = (unsigned char)((v >> 16) & 0xff);
+    p[3] = (unsigned char)((v >> 24) & 0xff);
+}
 
 // Initialize plain env backend
 static int env_init(struct backend *b)
@@ -17,18 +33,25 @@ static int env_init(struct backend *b)
     return 0;
 }
 
-// Payload size equals full raw size for plain env device
+// Payload size equals raw_size minus 4-byte CRC header
 static size_t env_payload_size(const struct backend *b)
 {
-    return (size_t)b->cfg->raw_size;
+    size_t s = (size_t)b->cfg->raw_size;
+    return s > sizeof(uint32_t) ? s - sizeof(uint32_t) : 0;
 }
 
-// Read raw payload from device at configured offset
+// Read CRC header, then payload; verify CRC and warn on mismatch
 static int env_read(struct backend *b, unsigned char *dst, size_t len)
 {
-    if (len > b->cfg->raw_size) {
-        fprintf(stderr, "env: requested %zu > raw_size %llu\n",
-                len, (unsigned long long)b->cfg->raw_size);
+    size_t total = (size_t)b->cfg->raw_size;
+    size_t payload = env_payload_size(b);
+
+    if (len != payload) {
+        fprintf(stderr, "env: requested %zu != payload %zu\n", len, payload);
+        return -1;
+    }
+    if (total < sizeof(uint32_t)) {
+        fprintf(stderr, "env: raw_size too small (%zu)\n", total);
         return -1;
     }
 
@@ -42,29 +65,54 @@ static int env_read(struct backend *b, unsigned char *dst, size_t len)
         close(fd);
         return -1;
     }
+
+    unsigned char hdr[4];
+    ssize_t hn = read(fd, hdr, sizeof(hdr));
+    if (hn != (ssize_t)sizeof(hdr)) {
+        fprintf(stderr, "short read hdr %zd/%zu\n", hn, sizeof(hdr));
+        close(fd);
+        return -1;
+    }
+
     ssize_t n = read(fd, dst, len);
     close(fd);
     if (n != (ssize_t)len) {
-        fprintf(stderr, "short read %zd/%zu\n", n, len);
+        fprintf(stderr, "short read payload %zd/%zu\n", n, len);
         return -1;
+    }
+
+    uint32_t stored = get_u32le(hdr);
+    uint32_t calc   = crc32(0, dst, len);
+    if (stored != calc) {
+        fprintf(stderr, "Warning: bad CRC on env (stored 0x%08x, calc 0x%08x)\n",
+                stored, calc);
     }
     return 0;
 }
 
-// Write payload with fill byte padding to full raw size
+// Write payload preceded by freshly computed CRC header
 static int env_write(struct backend *b, const unsigned char *src, size_t len)
 {
-    if (len > b->cfg->raw_size) {
-        fprintf(stderr, "env: payload too big (%zu > %llu)\n",
-                len, (unsigned long long)b->cfg->raw_size);
+    size_t total = (size_t)b->cfg->raw_size;
+    size_t payload = env_payload_size(b);
+
+    if (len > payload) {
+        fprintf(stderr, "env: payload too big (%zu > %zu)\n", len, payload);
+        return -1;
+    }
+    if (total < sizeof(uint32_t)) {
+        fprintf(stderr, "env: raw_size too small (%zu)\n", total);
         return -1;
     }
 
-    size_t total = (size_t)b->cfg->raw_size;
     unsigned char *buf = malloc(total);
     if (!buf) return -1;
+
     memset(buf, b->cfg->raw_fill, total);
-    memcpy(buf, src, len);
+    memcpy(buf + sizeof(uint32_t), src, len);
+
+    uint32_t crc = crc32(0, src, len);
+    put_u32le(buf, crc);
 
     int fd = open(b->cfg->dev[0].devname, O_WRONLY);
     if (fd < 0) {
