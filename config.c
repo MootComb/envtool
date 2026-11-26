@@ -55,7 +55,7 @@ static int parse_fw_env_config(struct cfg *c, FILE *fp)
     if (!strcmp(c->dev[0].devname, "/dev/env") ||
         !strcmp(c->dev[0].devname, "env")) {
         c->kind = BK_ENV;
-        c->raw_off  = c->dev[0].devoff;
+        c->raw_off  = c->dev[0].devoff;   // offset points to CRC header
         c->raw_size = c->dev[0].env_size;
         c->raw_fill = 0x00;
         c->have_redundant = 0;
@@ -73,7 +73,7 @@ static int parse_legacy_envtool(struct cfg *c, FILE *fp)
 
     memset(c, 0, sizeof(*c));
     c->kind      = BK_ENV;
-    c->raw_off   = 4;
+    c->raw_off   = 0;          // offset of CRC header, not of payload
     c->raw_size  = 0x10000;
     c->raw_fill  = 0x00;
     strcpy(c->dev[0].devname, "/dev/env");
@@ -92,7 +92,9 @@ static int parse_legacy_envtool(struct cfg *c, FILE *fp)
         } else if (!strcmp(key, "size")) {
             c->raw_size = (uint64_t)strtoull(val, NULL, 0);
         } else if (!strcmp(key, "offset")) {
-            c->raw_off = (uint64_t)strtoull(val, NULL, 0);
+            // legacy offset points to payload start; convert to CRC start
+            uint64_t v = (uint64_t)strtoull(val, NULL, 0);
+            c->raw_off = v >= 4 ? v - 4 : 0;
         } else if (!strcmp(key, "fill")) {
             c->raw_fill = (unsigned char)strtoul(val, NULL, 0);
         }
@@ -181,7 +183,7 @@ static int autodetect_env(struct cfg *c)
     if (access("/dev/env", R_OK | W_OK) == 0) {
         memset(c, 0, sizeof(*c));
         c->kind     = BK_ENV;
-        c->raw_off  = 4;
+        c->raw_off  = 0;          // offset of CRC header
         c->raw_size = 0x10000;
         c->raw_fill = 0x00;
         strcpy(c->dev[0].devname, "/dev/env");
